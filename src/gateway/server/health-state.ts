@@ -17,6 +17,8 @@ let broadcastHealthUpdate: ((snap: HealthSummary) => void) | null = null;
 // Tracks the most recent runtimeSnapshot queued while a refresh is in-flight so it
 // is not silently dropped when a second caller arrives concurrently.
 let pendingRuntimeSnapshot: ChannelRuntimeSnapshot | undefined = undefined;
+// Tracks the most recent probe intent so the follow-up refresh uses the latest caller's preference.
+let pendingProbe: boolean | undefined = undefined;
 
 export function buildGatewaySnapshot(): Snapshot {
   const cfg = loadConfig();
@@ -91,14 +93,20 @@ export async function refreshGatewayHealthSnapshot(opts?: {
     pendingRuntimeSnapshot = opts.runtimeSnapshot;
   }
 
+  // Track the latest probe intent so the finally block uses the most recent caller's preference.
+  if (opts?.probe !== undefined) {
+    pendingProbe = opts.probe;
+  }
+
   if (!healthRefresh) {
     // Capture and clear the pending snapshot for this refresh cycle.
     const snapshotForRefresh = pendingRuntimeSnapshot;
     pendingRuntimeSnapshot = undefined;
+    const probeForRefresh = pendingProbe ?? false;
 
     healthRefresh = (async () => {
       const snap = await getHealthSnapshot({
-        probe: opts?.probe,
+        probe: probeForRefresh,
         runtimeSnapshot: snapshotForRefresh,
       });
       healthCache = snap;
@@ -109,10 +117,13 @@ export async function refreshGatewayHealthSnapshot(opts?: {
       return snap;
     })().finally(() => {
       healthRefresh = null;
+      // Capture the latest probe intent for the follow-up before clearing.
+      const followUpProbe = pendingProbe ?? false;
+      pendingProbe = undefined;
       // If a newer runtimeSnapshot arrived while the refresh was in-flight, kick
       // off a follow-up refresh so the latest runtime state is reflected.
       if (pendingRuntimeSnapshot !== undefined) {
-        void refreshGatewayHealthSnapshot({ probe: opts?.probe });
+        void refreshGatewayHealthSnapshot({ probe: followUpProbe });
       }
     });
   } else if (opts?.runtimeSnapshot !== undefined) {
